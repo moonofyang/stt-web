@@ -25,7 +25,7 @@
         .then(function(stream) {
           audioContext = new (window.AudioContext || window.webkitAudioContext)();
           analyser = audioContext.createAnalyser();
-          analyser.fftSize = 2048;
+          analyser.fftSize = 256; // 💡 분석 속도와 실시간성 향상을 위해 플러터 v3 규격인 256으로 변경
 
           microphone = audioContext.createMediaStreamSource(stream);
           javascriptNode = audioContext.createScriptProcessor(2048, 1, 1);
@@ -41,22 +41,16 @@
 
             let values = 0;
             let length = array.length;
-            let maxEnergy = 0;
-            let maxIndex = 0;
 
             for (let i = 0; i < length; i++) {
               values += array[i];
-              if (array[i] > maxEnergy) {
-                maxEnergy = array[i];
-                maxIndex = i;
-              }
             }
 
-            let averageVolume = values / length;
-            let detectedPitch = maxEnergy > 30 ? maxIndex * (audioContext.sampleRate / analyser.fftSize) : 0;
+            let averageVolume = values / length; // 0 ~ 255 범위의 평균값 계산
 
+            // 💡 플러터 v3 정규화 및 분석 기준 스케일(0 ~ 1000+)에 맞춰 전달
             if (window.onAudioVolumeSignal) {
-              window.onAudioVolumeSignal(detectedPitch > 0 ? detectedPitch : averageVolume * 3);
+              window.onAudioVolumeSignal(averageVolume * 10); 
             }
           };
         })
