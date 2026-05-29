@@ -3,9 +3,19 @@
 <head>
   <base href="/stt-web/">
   <meta charset="UTF-8">
-  <title>AI Realtime Speaker Diarization System</title>
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="description" content="AI Realtime Speaker Diarization System v3.0">
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="STT Diarization">
+
+  <title>AI 실시간 화자 분리 웹앱 v1.1</title>
+  <link rel="manifest" href="manifest.json">
   <style>
-    body { background-color: #f3f4f6; }
+    body { background-color: #f3f4f6; padding: 0; margin: 0; }
   </style>
 </head>
 <body>
@@ -16,24 +26,47 @@
     let javascriptNode = null;
     let recognition = null;
     let isMonitoring = false;
+    let streamReference = null;
 
-    // 1. 오디오 모니터링 시작 (Flutter에서 호출)
+    // 실시간 오디오 모니터링 및 STT 시작
     window.startAudioMonitor = function() {
       if (isMonitoring) return;
       isMonitoring = true;
 
-      navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+      // 1. 모바일/PC 마이크 미디어 장치 접근 인터페이스 통합 통합 표준화
+      const constraints = { 
+        audio: { 
+          echoCancellation: true, 
+          noiseSuppression: true, 
+          autoGainControl: true 
+        }, 
+        video: false 
+      };
+
+      navigator.mediaDevices.getUserMedia(constraints)
         .then(function(stream) {
-          audioContext = new (window.AudioContext || window.webkitAudioContext)();
+          streamReference = stream;
+          
+          // 2. iOS/사파리 및 크롬 오디오 컨텍스트 호환성 레이어 크로스 브라우징
+          const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+          audioContext = new AudioContextClass();
           analyser = audioContext.createAnalyser();
           analyser.fftSize = 256; 
 
           microphone = audioContext.createMediaStreamSource(stream);
-          javascriptNode = audioContext.createScriptProcessor(2048, 1, 1);
+          
+          // ScriptProcessor의 크로스 브라우저 바인딩
+          const createScriptProcessor = audioContext.createScriptProcessor || audioContext.createJavaScriptNode;
+          javascriptNode = createScriptProcessor.call(audioContext, 2048, 1, 1);
 
           microphone.connect(analyser);
           analyser.connect(javascriptNode);
           javascriptNode.connect(audioContext.destination);
+
+          // 3. 모바일 브라우저의 오디오 잠금 강제 해제 (핵심)
+          if (audioContext.state === 'suspended') {
+            audioContext.resume();
+          }
 
           javascriptNode.onaudioprocess = function() {
             if (!isMonitoring) return;
@@ -46,19 +79,19 @@
               values += array[i];
             }
 
+            // 플러터로 주파수/피치 볼륨 매칭 값 전달
             let averageVolume = values / length; 
-
-            // 플러터 Dart 내부 수신 스케일(volume > 50.0) 동기화
             if (window.onAudioVolumeSignal) {
               window.onAudioVolumeSignal(averageVolume * 10); 
             }
           };
         })
         .catch(function(err) {
-          console.error("마이크 접근 에러:", err);
+          console.error("마이크 접근 제한 또는 지원하지 않는 브라우저입니다:", err);
+          alert("마이크 권한을 허용해 주세요 (HTTPS 환경 필수).");
         });
 
-      // 2. Web Speech API (STT) 엔진 구동
+      // 4. Web Speech API 구동 (모바일 크롬/사파리 전용 래핑)
       if (!recognition) {
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
         if (SpeechRecognition) {
@@ -88,8 +121,18 @@
             }
           };
 
-          recognition.onerror = function(e) { console.log("STT 에러:", e); };
-          recognition.onend = function() { if (isMonitoring && recognition) recognition.start(); };
+          recognition.onerror = function(e) { 
+            console.log("STT 오디오 스트림 인식 오류 상태:", e); 
+          };
+          
+          recognition.onend = function() { 
+            // 분석 상태가 켜져 있는 도중 모바일에서 STT가 끊기면 자동으로 재기동 시도
+            if (isMonitoring && recognition) {
+              try { recognition.start(); } catch(err) {}
+            }
+          };
+        } else {
+          alert("현재 브라우저는 실시간 웹 STT(SpeechRecognition)를 지원하지 않습니다. 크롬이나 사파리를 이용해 주세요.");
         }
       }
 
@@ -98,7 +141,7 @@
       }
     };
 
-    // 오디오 모니터링 중지 (Flutter에서 호출)
+    // 모니터링 완전 안전 종료 및 하드웨어 자원 반환
     window.stopAudioMonitor = function() {
       isMonitoring = false;
       if (recognition) {
@@ -106,7 +149,14 @@
       }
       if (javascriptNode) { javascriptNode.disconnect(); javascriptNode = null; }
       if (microphone) { microphone.disconnect(); microphone = null; }
-      if (audioContext) { audioContext.close(); audioContext = null; }
+      if (audioContext) { 
+        audioContext.close(); 
+        audioContext = null; 
+      }
+      if (streamReference) {
+        streamReference.getTracks().forEach(track => track.stop());
+        streamReference = null;
+      }
       if (window.onAudioVolumeSignal) window.onAudioVolumeSignal(0.0);
     };
   </script>
@@ -116,7 +166,7 @@
     window.addEventListener('load', function(ev) {
       _flutter.loader.loadEntrypoint({
         serviceWorker: {
-          serviceWorkerVersion: "{{flutter_service_worker_version}}",
+          serviceWorkerVersion: ""299483671"",
         },
         onEntrypointLoaded: function(engineInitializer) {
           engineInitializer.initializeEngine().then(function(appRunner) {
