@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base href="/">
+  <meta charset="UTF-8">
+  <title>AI Realtime STT Master</title>
+</head>
+<body>
+  <script src="flutter_bootstrap.js" async></script>
+
+  <script>
+    var recognition;
+    var audioContext;
+    var audioSource;
+    var analyser;
+    var processor;
+    var micStream;
+
+    function initSpeechRecognition() {
+      if (recognition) return;
+      if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+        var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        recognition = new SpeechRecognition();
+        recognition.continuous = true;
+        recognition.interimResults = true;
+        recognition.lang = 'ko-KR';
+
+        recognition.onresult = function(event) {
+          var interim_transcript = '';
+          var final_transcript = '';
+          for (var i = event.resultIndex; i < event.results.length; ++i) {
+            if (event.results[i].isFinal) {
+              final_transcript += event.results[i][0].transcript;
+            } else {
+              interim_transcript += event.results[i][0].transcript;
+            }
+          }
+          var currentText = interim_transcript || final_transcript;
+          var isFinal = final_transcript.length > 0;
+          
+          if (window.onWebSpeechResult) {
+            window.onWebSpeechResult(currentText, isFinal);
+          }
+        };
+
+        recognition.onerror = function(event) {
+          console.error("STT 크롬 엔진 에러:", event.error);
+        };
+
+        recognition.onend = function() {
+          if (window.isMicRunning) {
+            try { recognition.start(); } catch(e) {}
+          }
+        };
+      }
+    }
+
+    async function startAudioMonitor() {
+      window.isMicRunning = true;
+      initSpeechRecognition();
+      if (recognition) { try { recognition.start(); } catch(e){} }
+
+      try {
+        if (!micStream) {
+          micStream = await navigator.mediaDevices.getUserMedia({ 
+            audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: true }, 
+            video: false 
+          });
+        }
+        if (!audioContext) {
+          audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        if (audioContext.state === 'suspended') {
+          await audioContext.resume();
+        }
+
+        if (audioSource) audioSource.disconnect();
+        if (processor) processor.disconnect();
+
+        audioSource = audioContext.createMediaStreamSource(micStream);
+        analyser = audioContext.createAnalyser();
+        analyser.fftSize = 512; // 해상도 상향
+        processor = audioContext.createScriptProcessor(2048, 1, 1);
+        
+        audioSource.connect(analyser);
+        analyser.connect(processor);
+        processor.connect(audioContext.destination);
+        
+        var dataArray = new Uint8Array(analyser.frequencyBinCount);
+        processor.onaudioprocess = function() {
+          if (!window.isMicRunning) return;
+          analyser.getByteFrequencyData(dataArray);
+          
+          var maxVal = 0;
+          var maxIndex = -1;
+          for (var i = 0; i < dataArray.length; i++) {
+            if (dataArray[i] > maxVal) {
+              maxVal = dataArray[i];
+              maxIndex = i;
+            }
+          }
+          
+          // 주파수 도출 정확도 개선 연산
+          var nyquist = audioContext.sampleRate / 2;
+          var hzPerBin = nyquist / dataArray.length;
+          var pitchHz = maxIndex * hzPerBin;
+
+          if (window.onAudioVolumeSignal && maxVal > 30) {
+            window.onAudioVolumeSignal(pitchHz);
+          } else if (window.onAudioVolumeSignal) {
+            window.onAudioVolumeSignal(0.0);
+          }
+        };
+      } catch (err) {
+        console.error("마이크 연동 실패:", err);
+      }
+    }
+
+    function stopAudioMonitor() {
+      window.isMicRunning = false;
+      if (recognition) { try { recognition.stop(); } catch(e){} }
+      if (processor) { try { processor.disconnect(); } catch(e){} processor = null; }
+      if (audioSource) { try { audioSource.disconnect(); } catch(e){} audioSource = null; }
+      if (audioContext) { try { audioContext.close(); } catch(e){} audioContext = null; }
+      if (micStream) { micStream.getTracks().forEach(track => track.stop()); micStream = null; }
+      if (window.onAudioVolumeSignal) { window.onAudioVolumeSignal(0.0); }
+    }
+  </script>
+</body>
+</html>
